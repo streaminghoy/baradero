@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>StreamCall x 3 (Audio Consola Fix)</title>
+    <title>StreamCall 3 (Audio Consola Fix)</title>
     
     <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js" crossorigin></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js" crossorigin></script>
@@ -151,6 +151,15 @@
                     videoRef.current.play().catch(e => console.log("Play interceptado"));
                 }
             }, [stream]);
+            // Este effect se asegura que cuando cambia 'muted', el video se actualice
+            useEffect(() => {
+                if (videoRef.current) {
+                    videoRef.current.muted = muted;
+                    if (!muted) {
+                        videoRef.current.play().catch(e => {});
+                    }
+                }
+            }, [muted]);
             return <video ref={videoRef} className={className} style={style} autoPlay playsInline muted={muted}></video>;
         };
 
@@ -235,13 +244,8 @@
             };
 
             const enableAudio = () => {
-                // Resume AudioContext si existe
                 if (sharedAudioCtx && sharedAudioCtx.state === 'suspended') {
                     sharedAudioCtx.resume();
-                }
-                // Crear uno nuevo si no existe, para asegurar que el navegador lo active con gesture
-                if (!sharedAudioCtx) {
-                    sharedAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
                 }
                 setAudioEnabled(true);
             };
@@ -288,7 +292,7 @@
                                 </button>
                             )}
                             {audioEnabled && (
-                                <span className="text-green-400 text-xs font-bold uppercase mr-2">🔊 Audio Activo</span>
+                                <span className="text-green-400 text-xs font-bold uppercase">🔊 Audio Activo</span>
                             )}
                             <select value={selectedAudio} onChange={e => setSelectedAudio(e.target.value)} className="w-48">
                                 {audioDevices.map(d => <option key={d.deviceId} value={d.deviceId}>{d.label || 'Mic'}</option>)}
@@ -390,27 +394,6 @@
             const localStream = useRef(null);
             const [myStreamState, setMyStreamState] = useState(null);
 
-            // --- AUDIO KEEP-ALIVE: evita que el móvil suspenda el micrófono ---
-            useEffect(() => {
-                if (!joined) return;
-                let ctx, osc, gain;
-                try {
-                    ctx = new (window.AudioContext || window.webkitAudioContext)();
-                    osc = ctx.createOscillator();
-                    gain = ctx.createGain();
-                    gain.gain.value = 0.001; // casi silencio, pero mantiene la sesión activa
-                    osc.connect(gain);
-                    gain.connect(ctx.destination);
-                    osc.start();
-                    if (ctx.state === 'suspended') ctx.resume();
-                } catch(e) {}
-                return () => {
-                    try { osc.stop(); } catch(e){}
-                    try { ctx.close(); } catch(e){}
-                };
-            }, [joined]);
-            // --- FIN KEEP-ALIVE ---
-
             const switchCamera = async () => {
                 const nextMode = facingMode === 'user' ? 'environment' : 'user';
                 setFacingMode(nextMode);
@@ -437,10 +420,6 @@
                         setMyStreamState(new MediaStream(localStream.current.getTracks()));
                         if (oldVideoTrack) oldVideoTrack.stop();
                     }
-                    // Asegurar que el audio siga activo después de cambiar cámara
-                    if (localStream.current) {
-                        localStream.current.getAudioTracks().forEach(t => { t.enabled = true; });
-                    }
                 } catch (e) { alert("Error al girar la cámara"); }
             };
 
@@ -460,31 +439,19 @@
                         const res = { '360': [640,360], '720': [1280,720], '1080': [1920,1080] };
                         const s = await navigator.mediaDevices.getUserMedia({ 
                             video: { width: { ideal: res[quality][0] }, height: { ideal: res[quality][1] }, facingMode: facingMode }, 
-                            audio: { 
-                                echoCancellation: true, 
-                                noiseSuppression: false,
-                                autoGainControl: true 
-                            } 
+                            audio: { echoCancellation: true, noiseSuppression: true } 
                         });
-                        s.getAudioTracks().forEach(t => { t.enabled = true; });
                         localStream.current = s;
                         setMyStreamState(s);
                         const baseId = roomName.toUpperCase();
                         peer.current = new Peer(`sc_guest_${baseId}_${slotId}`, PEER_CONFIG);
                         peer.current.on('open', () => {
-                            setTimeout(() => { 
-                                if (!localStream.current) return;
-                                localStream.current.getAudioTracks().forEach(t => t.enabled = true);
-                                const streamDir = new MediaStream(localStream.current.getTracks());
-                                peer.current.call(`sc_dir_${baseId}`, streamDir); 
-                            }, 300);
+                            setTimeout(() => { peer.current.call(`sc_dir_${baseId}`, localStream.current); }, 300);
                         });
                         peer.current.on('connection', (conn) => {
                             conn.on('data', (data) => {
                                 if (data === 'WAKE_UP_OBS' && localStream.current) {
-                                    localStream.current.getAudioTracks().forEach(t => t.enabled = true);
-                                    const streamObs = new MediaStream(localStream.current.getTracks());
-                                    peer.current.call(`sc_obs_${baseId}_${slotId}`, streamObs);
+                                    peer.current.call(`sc_obs_${baseId}_${slotId}`, localStream.current);
                                 }
                             });
                         });
